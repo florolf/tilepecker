@@ -1,0 +1,22 @@
+[project]
+name = "tilepecker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Florian Larysch", email = "fl@n621.de" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "tlog-scales",
+]
+
+[tool.uv.sources]
+tlog-scales = { git = "https://github.com/florolf/tlog-scales", rev = "d8464fe0154a0afb4e459c3b6c9e5deecce61cfc" }
+
+[project.scripts]
+tilepecker = "tilepecker:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

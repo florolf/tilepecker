@@ -208,12 +208,12 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tlog-scales", git = "https://github.com/florolf/tlog-scales?rev=d8464fe0154a0afb4e459c3b6c9e5deecce61cfc" }]
+requires-dist = [{ name = "tlog-scales", git = "https://github.com/florolf/tlog-scales?rev=053df15f1acbe2f324297029064ffa8d43b7ccd9" }]
 
 [[package]]
 name = "tlog-scales"
-version = "0.0.3.dev3+gd8464fe01"
-source = { git = "https://github.com/florolf/tlog-scales?rev=d8464fe0154a0afb4e459c3b6c9e5deecce61cfc#d8464fe0154a0afb4e459c3b6c9e5deecce61cfc" }
+version = "0.0.3.dev21+g053df15f1"
+source = { git = "https://github.com/florolf/tlog-scales?rev=053df15f1acbe2f324297029064ffa8d43b7ccd9#053df15f1acbe2f324297029064ffa8d43b7ccd9" }
 dependencies = [
     { name = "cryptography" },
     { name = "requests" },

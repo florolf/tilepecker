@@ -49,9 +49,8 @@ class App:
             return
 
         cp = self.checkpoint
-        body = cp.serialize(with_signatures=False).encode()
 
-        valid = {sig for _, sig in self.vkeyset.verify(cp.signatures, body)}
+        valid = {sig for _, sig in self.vkeyset.verify(cp.signatures, cp)}
         self.verified_sigs = valid
 
         known = {(v.name, v.key_id) for v in self.vkeyset.keys.values()}

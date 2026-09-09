@@ -124,6 +124,23 @@ def _hex_preview(data: bytes, limit: int = 512) -> str:
     return "\n".join(out)
 
 
+# signature type identifier bytes from c2sp.org/signed-note
+SIG_TYPE_NAMES = {
+    0x01: "ed25519-plain",
+    0x02: "ecdsa",
+    0x03: "reserved",
+    0x04: "ed25519",
+    0x05: "rfc6962",
+    0x06: "mldsa44",
+    **{t: "reserved" for t in range(0xfa, 0xff)},
+    0xff: "unassigned",
+}
+
+
+def _sig_type_str(vkey: Vkey) -> str:
+    return SIG_TYPE_NAMES.get(vkey.sig_type, str(vkey.sig_type))
+
+
 def draw_box(win, title: str) -> None:
     win.erase()
     win.box()
@@ -176,22 +193,30 @@ def render_checkpoint_pane(win, app: App) -> None:
     payload_w = max((len(s.payload.hex()) for s in cp.signatures), default=len("payload"))
     payload_w = max(payload_w, len("payload"))
     has_vkeys = app.vkeyset is not None
-    known = set()
+    keys: dict[tuple[str, int], Vkey] = {}
     if has_vkeys and app.vkeyset is not None:
-        known = {(v.name, v.key_id) for v in app.vkeyset.keys.values()}
+        keys = {(v.name, v.key_id): v for v in app.vkeyset.keys.values()}
 
-    header = f"  {'ok':<2}  {'name'.ljust(name_w)}  {'key_id'.ljust(8)}  {'payload'.ljust(payload_w)}"
+    types = {k: _sig_type_str(v) for k, v in keys.items()}
+    type_w = max((len(t) for t in types.values()), default=len("type"))
+    type_w = max(type_w, len("type"))
+
+    header = (f"  {'ok':<2}  {'name'.ljust(name_w)}  {'key_id'.ljust(8)}  "
+              f"{'type'.ljust(type_w)}  {'payload'.ljust(payload_w)}")
     _safe_addstr(win, y, 2, header, curses.A_UNDERLINE); y += 1
     for sig in cp.signatures:
+        known = (sig.name, sig.key_id) in keys
         if not has_vkeys:
             mark = "-"
         elif sig in app.verified_sigs:
             mark = "OK"
-        elif (sig.name, sig.key_id) in known:
+        elif known:
             mark = "X"
         else:
             mark = "?"
-        row = f"  {mark:<2}  {sig.name.ljust(name_w)}  {sig.key_id:08x}  {sig.payload.hex().ljust(payload_w)}"
+        sig_type = types.get((sig.name, sig.key_id), "?")
+        row = (f"  {mark:<2}  {sig.name.ljust(name_w)}  {sig.key_id:08x}  "
+               f"{sig_type.ljust(type_w)}  {sig.payload.hex().ljust(payload_w)}")
         _safe_addstr(win, y, 2, row)
         y += 1
 

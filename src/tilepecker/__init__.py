@@ -1,10 +1,12 @@
 import argparse
 import curses
 import logging
+import time
 from collections import deque
 from typing import Optional
 
 from tlog_scales import backend, tiles
+from tlog_scales.policy import Policy, Quorum, QuorumUnsatisfiedError
 from tlog_scales.reader import TilesReader
 from tlog_scales.signing import NoteSignature, Vkey, VkeySet
 from tlog_scales.tlog import Checkpoint, InclusionProofInvalid
@@ -30,10 +32,15 @@ class CursesLogHandler(logging.Handler):
 
 class App:
     def __init__(self, reader: TilesReader, formatter: LeafFormatter,
-                 vkeyset: Optional[VkeySet] = None):
+                 vkeyset: Optional[VkeySet] = None,
+                 policy: Optional[Policy] = None):
         self.reader = reader
         self.formatter = formatter
         self.vkeyset = vkeyset
+        self.policy = policy
+        self.quorum: Optional[Quorum] = None
+        self.quorum_error: str = ""
+        self.log_sig_ok: Optional[bool] = None
 
         self.checkpoint: Optional[Checkpoint] = None
         self.index: Optional[int] = None
@@ -61,12 +68,43 @@ class App:
         log.info("checkpoint signatures verified: %d/%d",
                  len(valid), len(cp.signatures))
 
+    def _check_policy(self) -> None:
+        self.quorum = None
+        self.quorum_error = ""
+        self.log_sig_ok = None
+        if self.policy is None or self.checkpoint is None:
+            return
+
+        cp = self.checkpoint
+
+        # Policy.check() only evaluates the witness quorum, so check that one of
+        # the policy's log keys has signed the checkpoint as well.
+        log_keys = {vkey.identity() for vkey, _ in self.policy.logs}
+        self.log_sig_ok = any((sig.name, sig.key_id) in log_keys
+                              for sig in self.verified_sigs)
+        if self.log_sig_ok:
+            log.info("policy: checkpoint signed by a policy log key")
+        else:
+            log.error("policy: no valid signature from any policy log key")
+
+        try:
+            self.quorum = self.policy.check(cp)
+            log.info("policy: witness quorum satisfied (timestamp %d)",
+                     self.quorum.timestamp)
+        except QuorumUnsatisfiedError:
+            self.quorum_error = "unsatisfied"
+            log.error("policy: witness quorum NOT satisfied")
+        except Exception as e:
+            self.quorum_error = f"error: {e}"
+            log.error("policy: quorum check failed: %s", e)
+
     def refresh_checkpoint(self) -> None:
         log.info("fetching checkpoint")
         cp = self.reader.get_checkpoint()
         self.checkpoint = cp
         log.info("checkpoint: origin=%s size=%d", cp.origin, cp.size)
         self._verify_checkpoint_sigs()
+        self._check_policy()
 
         if self.index is not None and self.index >= cp.size:
             new_idx = max(0, cp.size - 1)
@@ -186,6 +224,18 @@ def render_checkpoint_pane(win, app: App) -> None:
     _safe_addstr(win, y, 2, f"origin: {cp.origin}"); y += 1
     _safe_addstr(win, y, 2, f"size:   {cp.size}"); y += 1
     _safe_addstr(win, y, 2, f"root:   {cp.root_hash.hex()}"); y += 1
+    if app.policy is not None:
+        log_str = "OK" if app.log_sig_ok else "MISSING"
+        if app.quorum is not None:
+            ts = app.quorum.timestamp
+            when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts)) if ts else "-"
+            q_str = f"OK (timestamp {ts}, {when})"
+        else:
+            q_str = app.quorum_error.upper()
+        ok = app.log_sig_ok and app.quorum is not None
+        _safe_addstr(win, y, 2, f"policy: log signature {log_str}, quorum {q_str}",
+                     0 if ok else curses.A_BOLD)
+        y += 1
     _safe_addstr(win, y, 2, f"signatures:", curses.A_BOLD); y += 1
 
     name_w = max((len(s.name) for s in cp.signatures), default=4)
@@ -201,8 +251,17 @@ def render_checkpoint_pane(win, app: App) -> None:
     type_w = max((len(t) for t in types.values()), default=len("type"))
     type_w = max(type_w, len("type"))
 
+    roles: dict[tuple[str, int], str] = {}
+    if app.policy is not None:
+        for vkey, _ in app.policy.logs:
+            roles[vkey.identity()] = "log"
+        roles.update(app.policy.witness_names)
+    role_w = max((len(r) for r in roles.values()), default=0)
+    role_w = max(role_w, len("policy")) if roles else 0
+    role_hdr = f"  {'policy'.ljust(role_w)}" if role_w else ""
+
     header = (f"  {'ok':<2}  {'name'.ljust(name_w)}  {'key_id'.ljust(8)}  "
-              f"{'type'.ljust(type_w)}  {'payload'.ljust(payload_w)}")
+              f"{'type'.ljust(type_w)}{role_hdr}  {'payload'.ljust(payload_w)}")
     _safe_addstr(win, y, 2, header, curses.A_UNDERLINE); y += 1
     for sig in cp.signatures:
         known = (sig.name, sig.key_id) in keys
@@ -215,8 +274,9 @@ def render_checkpoint_pane(win, app: App) -> None:
         else:
             mark = "?"
         sig_type = types.get((sig.name, sig.key_id), "?")
+        role = f"  {roles.get((sig.name, sig.key_id), '-').ljust(role_w)}" if role_w else ""
         row = (f"  {mark:<2}  {sig.name.ljust(name_w)}  {sig.key_id:08x}  "
-               f"{sig_type.ljust(type_w)}  {sig.payload.hex().ljust(payload_w)}")
+               f"{sig_type.ljust(type_w)}{role}  {sig.payload.hex().ljust(payload_w)}")
         _safe_addstr(win, y, 2, row)
         y += 1
 
@@ -431,8 +491,10 @@ def cmain(stdscr, app: App, log_buf: deque, initial_index: Optional[int]) -> Non
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tilepecker",
                                      description="Interactive transparency log inspector")
-    parser.add_argument("location",
-                        help="Log location (local path, file:// or http(s):// URL)")
+    parser.add_argument("location", nargs="?", default=None,
+                        help="Log location (local path, file:// or http(s):// URL); "
+                             "with --policy, select a log by URL or unique substring; "
+                             "may be omitted if --policy names exactly one log with a URL")
     parser.add_argument("--format", "-f", choices=sorted(FORMATTERS.keys()),
                         default="binary",
                         help="Leaf formatter (default: binary)")
@@ -440,13 +502,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Initial leaf index (default: latest)")
     parser.add_argument("--vkey", action="append", default=[],
                         help="Verification key in 'name+keyid+b64' form (repeatable)")
+    parser.add_argument("--policy", metavar="FILE", default=None,
+                        help="Trust policy file; its log and witness keys are "
+                             "used for verification and the witness quorum is checked")
+    parser.add_argument("--policy-format", choices=["auto", "c2sp", "sigsum"], default="auto",
+                        help="Key format used in the policy file (default: auto)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable DEBUG logging")
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
 
     log_buf: deque = deque(maxlen=500)
     handler = CursesLogHandler(log_buf)
@@ -460,14 +528,48 @@ def main() -> None:
     formatter_cls = FORMATTERS[args.format]
     formatter = formatter_cls()
 
+    policy: Optional[Policy] = None
+    if args.policy is not None:
+        is_sigsum = {"auto": None, "c2sp": False, "sigsum": True}[args.policy_format]
+        try:
+            with open(args.policy) as f:
+                policy = Policy.from_text(f.read(), is_sigsum=is_sigsum)
+        except (OSError, ValueError) as e:
+            parser.error(f"failed to load policy {args.policy}: {e}")
+
+    location = args.location
+    if policy is not None:
+        urls = [url for _, url in policy.logs if url]
+        if location is not None:
+            urls = [url for url in urls if location in url]
+            if not urls:
+                parser.error(f"no log URL in policy matches {location!r}")
+            if len(urls) > 1:
+                parser.error(f"multiple log URLs in policy match {location!r}: " + ", ".join(urls))
+        if len(urls) != 1:
+            parser.error("location is required unless --policy names exactly one log with a URL; "
+                         "provide a log URL or unique substring as the location")
+        location = urls[0]
+    elif location is None:
+        parser.error("location is required unless --policy names exactly one log with a URL")
+
+    vkeys = [Vkey.from_string(v) for v in args.vkey]
+    if policy is not None:
+        vkeys += [vkey for vkey, _ in policy.logs]
+        vkeys += [e for e in policy.entities.values() if isinstance(e, Vkey)]
+
     vkeyset: Optional[VkeySet] = None
-    if args.vkey:
-        vkeyset = VkeySet(*[Vkey.from_string(v) for v in args.vkey])
+    if vkeys:
+        vkeyset = VkeySet(*vkeys)
         for vk in vkeyset.keys.values():
             log.info("loaded vkey: %s", vk)
 
-    be = backend.make_backend(args.location)
+    if policy is not None:
+        log.info("loaded policy %s: %d log(s), %d entities, quorum=%s", args.policy,
+                 len(policy.logs), len(policy.entities), policy.entry_point or "none")
+
+    be = backend.make_backend(location)
     reader = TilesReader(be)
-    app = App(reader, formatter, vkeyset=vkeyset)
+    app = App(reader, formatter, vkeyset=vkeyset, policy=policy)
 
     curses.wrapper(cmain, app, log_buf, args.leaf)

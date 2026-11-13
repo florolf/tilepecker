@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tlog-scales = { git = "https://github.com/florolf/tlog-scales", rev = "053df15f1acbe2f324297029064ffa8d43b7ccd9" }
+tlog-scales = { git = "https://github.com/florolf/tlog-scales", rev = "f9174a42876fcad5a066662c93b843e56b87ec2e" }
 
 [project.scripts]
 tilepecker = "tilepecker:main"

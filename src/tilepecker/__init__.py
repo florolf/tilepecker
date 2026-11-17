@@ -179,6 +179,25 @@ def _sig_type_str(vkey: Vkey) -> str:
     return SIG_TYPE_NAMES.get(vkey.sig_type, str(vkey.sig_type))
 
 
+def _sig_timestamp(vkey: Vkey, sig: NoteSignature) -> Optional[int]:
+    """Timestamp embedded in a (timestamped cosignature) signature, if any."""
+    try:
+        verifier = vkey.get_verifier()
+    except Exception:
+        return None
+    get_ts = getattr(verifier, "get_timestamp", None)
+    if get_ts is None or len(sig.payload) < 8:
+        return None
+    return get_ts(sig.payload)
+
+
+def _fmt_timestamp(ts: int) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts))
+    except (OverflowError, OSError, ValueError):
+        return str(ts)
+
+
 def draw_box(win, title: str) -> None:
     win.erase()
     win.box()
@@ -260,8 +279,18 @@ def render_checkpoint_pane(win, app: App) -> None:
     role_w = max(role_w, len("policy")) if roles else 0
     role_hdr = f"  {'policy'.ljust(role_w)}" if role_w else ""
 
+    timestamps: dict[NoteSignature, str] = {}
+    for sig in cp.signatures:
+        vkey = keys.get((sig.name, sig.key_id))
+        if vkey is not None and (ts := _sig_timestamp(vkey, sig)) is not None:
+            timestamps[sig] = _fmt_timestamp(ts)
+    ts_label = "timestamp (UTC)"
+    ts_w = max((len(t) for t in timestamps.values()), default=0)
+    ts_w = max(ts_w, len(ts_label)) if timestamps else 0
+    ts_hdr = f"  {ts_label.ljust(ts_w)}" if ts_w else ""
+
     header = (f"  {'ok':<2}  {'name'.ljust(name_w)}  {'key_id'.ljust(8)}  "
-              f"{'type'.ljust(type_w)}{role_hdr}  {'payload'.ljust(payload_w)}")
+              f"{'type'.ljust(type_w)}{role_hdr}{ts_hdr}  {'payload'.ljust(payload_w)}")
     _safe_addstr(win, y, 2, header, curses.A_UNDERLINE); y += 1
     for sig in cp.signatures:
         known = (sig.name, sig.key_id) in keys
@@ -275,8 +304,9 @@ def render_checkpoint_pane(win, app: App) -> None:
             mark = "?"
         sig_type = types.get((sig.name, sig.key_id), "?")
         role = f"  {roles.get((sig.name, sig.key_id), '-').ljust(role_w)}" if role_w else ""
+        ts_col = f"  {timestamps.get(sig, '-').ljust(ts_w)}" if ts_w else ""
         row = (f"  {mark:<2}  {sig.name.ljust(name_w)}  {sig.key_id:08x}  "
-               f"{sig_type.ljust(type_w)}{role}  {sig.payload.hex().ljust(payload_w)}")
+               f"{sig_type.ljust(type_w)}{role}{ts_col}  {sig.payload.hex().ljust(payload_w)}")
         _safe_addstr(win, y, 2, row)
         y += 1
 

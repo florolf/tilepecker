@@ -17,6 +17,19 @@ from .formats import FORMATTERS, LeafFormatter
 log = logging.getLogger("tilepecker")
 
 
+class LoggingBackend:
+    def __init__(self, inner: backend.TilesBackend):
+        self.inner = inner
+
+    def get(self, *path: str) -> bytes | None:
+        name = "/".join(path)
+        log.info("fetching %s", name)
+        data = self.inner.get(*path)
+        if data is None:
+            log.warning("fetch of %s failed", name)
+        return data
+
+
 class CursesLogHandler(logging.Handler):
     def __init__(self, buf: deque):
         super().__init__()
@@ -99,7 +112,6 @@ class App:
             log.error("policy: quorum check failed: %s", e)
 
     def refresh_checkpoint(self) -> None:
-        log.info("fetching checkpoint")
         cp = self.reader.get_checkpoint()
         self.checkpoint = cp
         log.info("checkpoint: origin=%s size=%d", cp.origin, cp.size)
@@ -126,7 +138,6 @@ class App:
             log.warning("leaf index %d out of range [0, %d)", idx, cp.size)
             return
 
-        log.info("fetching leaf %d", idx)
         leaf = self.reader.get_entry(idx)
 
         log.debug("building inclusion proof for leaf %d in tree of size %d", idx, cp.size)
@@ -611,7 +622,7 @@ def main() -> None:
         log.info("loaded policy %s: %d log(s), %d entities, quorum=%s", args.policy,
                  len(policy.logs), len(policy.entities), policy.entry_point or "none")
 
-    be = backend.make_backend(location)
+    be = LoggingBackend(backend.make_backend(location))
     reader = TilesReader(be)
     app = App(reader, formatter, vkeyset=vkeyset, policy=policy)
 

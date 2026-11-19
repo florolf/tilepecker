@@ -531,7 +531,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--leaf", "-n", type=int, default=None,
                         help="Initial leaf index (default: latest)")
     parser.add_argument("--vkey", action="append", default=[],
-                        help="Verification key in 'name+keyid+b64' form (repeatable)")
+                        help="Verification key in 'name+keyid+b64' form, or @FILE to "
+                             "read one vkey per line from FILE (repeatable)")
     parser.add_argument("--policy", metavar="FILE", default=None,
                         help="Trust policy file; its log and witness keys are "
                              "used for verification and the witness quorum is checked")
@@ -583,7 +584,19 @@ def main() -> None:
     elif location is None:
         parser.error("location is required unless --policy names exactly one log with a URL")
 
-    vkeys = [Vkey.from_string(v) for v in args.vkey]
+    vkeys: list[Vkey] = []
+    for arg in args.vkey:
+        if arg.startswith("@"):
+            path = arg[1:]
+            try:
+                with open(path) as f:
+                    lines = [line.strip() for line in f]
+                vkeys += [Vkey.from_string(line) for line in lines
+                          if line and not line.startswith("#")]
+            except (OSError, ValueError) as e:
+                parser.error(f"failed to load vkeys from {path}: {e}")
+        else:
+            vkeys.append(Vkey.from_string(arg))
     if policy is not None:
         vkeys += [vkey for vkey, _ in policy.logs]
         vkeys += [e for e in policy.entities.values() if isinstance(e, Vkey)]

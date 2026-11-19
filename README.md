@@ -14,6 +14,8 @@ Usage, e.g.:
 $ tilepecker https://log2025-alpha3.rekor.sigstage.dev --vkey 'log2025-alpha3.rekor.sigstage.dev+d3d3a70c+AZQ93VXPMmj9uZj7U/7CefQ9yy8RgYFv6mKzOseipjqp' --vkey 'witness.navigli.sunlight.geomys.org+a3e00fe2+BNy/co4C1Hn1p+INwJrfUlgz7W55dSZReusH/GhUhJ/G' --format json
 ```
 
+`--vkey @FILE` reads vkeys from `FILE`, one per line (blank lines and lines starting with `#` are ignored).
+
 ### Policies
 
 Instead of (or in addition to) `--vkey`, a trust policy in the

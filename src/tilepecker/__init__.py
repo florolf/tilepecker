@@ -3,7 +3,7 @@ import curses
 import logging
 import time
 from collections import deque
-from typing import Optional
+from typing import Callable, Optional
 
 from tlog_scales import backend, tiles
 from tlog_scales.policy import Policy, Quorum, QuorumUnsatisfiedError
@@ -268,6 +268,17 @@ def render_checkpoint_pane(win, app: App) -> None:
         y += 1
     _safe_addstr(win, y, 2, f"signatures:", curses.A_BOLD); y += 1
 
+    header, rows = _signature_table(app)
+    _safe_addstr(win, y, 2, header, curses.A_UNDERLINE); y += 1
+    for _, row in rows:
+        _safe_addstr(win, y, 2, row)
+        y += 1
+
+
+def _signature_table(app: App) -> tuple[str, list[tuple[NoteSignature, str]]]:
+    """Header and per-signature rows for the checkpoint's signature table."""
+    assert app.checkpoint is not None
+    cp = app.checkpoint
     name_w = max((len(s.name) for s in cp.signatures), default=4)
     name_w = max(name_w, len("name"))
     payload_w = max((len(_payload_summary(s.payload)) for s in cp.signatures), default=len("payload"))
@@ -302,7 +313,7 @@ def render_checkpoint_pane(win, app: App) -> None:
 
     header = (f"  {'ok':<2}  {'name'.ljust(name_w)}  {'key_id'.ljust(8)}  "
               f"{'type'.ljust(type_w)}{role_hdr}{ts_hdr}  {'payload'.ljust(payload_w)}")
-    _safe_addstr(win, y, 2, header, curses.A_UNDERLINE); y += 1
+    rows = []
     for sig in cp.signatures:
         known = (sig.name, sig.key_id) in keys
         if not has_vkeys:
@@ -318,8 +329,8 @@ def render_checkpoint_pane(win, app: App) -> None:
         ts_col = f"  {timestamps.get(sig, '-').ljust(ts_w)}" if ts_w else ""
         row = (f"  {mark:<2}  {sig.name.ljust(name_w)}  {sig.key_id:08x}  "
                f"{sig_type.ljust(type_w)}{role}{ts_col}  {_payload_summary(sig.payload).ljust(payload_w)}")
-        _safe_addstr(win, y, 2, row)
-        y += 1
+        rows.append((sig, row))
+    return header, rows
 
 
 def _payload_summary(payload: bytes, limit: int = 16) -> str:
@@ -391,6 +402,7 @@ HOTKEY_HELP = [
     ("q",         "Quit"),
     ("r",         "Re-fetch checkpoint"),
     ("h, ?",      "Show this help"),
+    ("s",         "Signatures dialog (Enter shows full payload)"),
     ("g",         "Go to leaf index (negative = from end; Esc to cancel)"),
     ("n, Right",  "Next leaf"),
     ("p, Left",   "Previous leaf"),
@@ -425,6 +437,102 @@ def show_help_popup(stdscr) -> None:
     _safe_addstr(win, height - 2, 1, "  (press any key to close)", curses.A_DIM)
     win.refresh()
     win.getch()
+
+
+def _scroll_key(key: int, pos: int, count: int, page: int) -> int:
+    """New position after a navigation key, clamped to [0, count)."""
+    if key in (curses.KEY_UP, ord("k")):
+        pos -= 1
+    elif key in (curses.KEY_DOWN, ord("j")):
+        pos += 1
+    elif key == curses.KEY_PPAGE:
+        pos -= page
+    elif key == curses.KEY_NPAGE:
+        pos += page
+    elif key == curses.KEY_HOME:
+        pos = 0
+    elif key == curses.KEY_END:
+        pos = count - 1
+    return max(0, min(pos, count - 1))
+
+
+def show_signatures_popup(stdscr, app: App, redraw: Callable[[], None]) -> None:
+    if app.checkpoint is None or not app.checkpoint.signatures:
+        log.warning("no signatures to show")
+        return
+    header, rows = _signature_table(app)
+    sh, sw = stdscr.getmaxyx()
+    width = max(len(header), *(len(r) for _, r in rows)) + 4
+    height = len(rows) + 5
+    sel = 0
+    top = 0
+    while True:
+        win = _popup_window(stdscr, height, width)
+        win.timeout(-1)
+        h, _ = win.getmaxyx()
+        visible = max(1, h - 4)
+        top = min(max(top, sel - visible + 1), sel)
+        draw_box(win, f"Signatures ({len(rows)})")
+        _safe_addstr(win, 1, 1, header, curses.A_UNDERLINE)
+        for i, (_, row) in enumerate(rows[top:top + visible]):
+            attr = curses.A_REVERSE if top + i == sel else 0
+            _safe_addstr(win, 2 + i, 1, row, attr)
+        _safe_addstr(win, h - 2, 1, "  Up/Down select, Enter payload, Esc/q close",
+                     curses.A_DIM)
+        win.refresh()
+        key = win.getch()
+        if key in (27, ord("q"), ord("s")):
+            return
+        if key in (curses.KEY_ENTER, 10, 13):
+            show_payload_popup(stdscr, app, rows[sel][0], redraw)
+            redraw()
+        elif key == curses.KEY_RESIZE:
+            redraw()
+        else:
+            sel = _scroll_key(key, sel, len(rows), visible)
+
+
+def show_payload_popup(stdscr, app: App, sig: NoteSignature,
+                       redraw: Callable[[], None]) -> None:
+    keys = {}
+    if app.vkeyset is not None:
+        keys = {(v.name, v.key_id): v for v in app.vkeyset.keys.values()}
+    vkey = keys.get((sig.name, sig.key_id))
+    info = [
+        f"name:    {sig.name}",
+        f"key_id:  {sig.key_id:08x}",
+        f"type:    {_sig_type_str(vkey) if vkey else '?'}",
+    ]
+    if vkey is not None and (ts := _sig_timestamp(vkey, sig)) is not None:
+        info.append(f"time:    {_fmt_timestamp(ts)} UTC")
+    info.append(f"length:  {len(sig.payload)} bytes")
+    info.append("")
+    lines = info + _hex_preview(sig.payload, limit=len(sig.payload)).splitlines()
+    width = max(len(l) for l in lines) + 6
+    height = len(lines) + 4
+    top = 0
+    while True:
+        win = _popup_window(stdscr, height, width)
+        win.timeout(-1)
+        h, _ = win.getmaxyx()
+        visible = max(1, h - 3)
+        max_top = max(0, len(lines) - visible)
+        top = min(top, max_top)
+        draw_box(win, "Signature payload")
+        for i, line in enumerate(lines[top:top + visible]):
+            _safe_addstr(win, 1 + i, 2, line)
+        hint = "  Esc/q close"
+        if max_top:
+            hint = f"  [{top + 1}-{min(top + visible, len(lines))}/{len(lines)}] Up/Down scroll, Esc/q close"
+        _safe_addstr(win, h - 2, 1, hint, curses.A_DIM)
+        win.refresh()
+        key = win.getch()
+        if key in (27, ord("q"), curses.KEY_ENTER, 10, 13):
+            return
+        if key == curses.KEY_RESIZE:
+            redraw()
+        else:
+            top = _scroll_key(key, top, max_top + 1, visible)
 
 
 def prompt_integer(stdscr, title: str) -> Optional[int]:
@@ -462,6 +570,33 @@ def prompt_integer(stdscr, title: str) -> Optional[int]:
         curses.curs_set(0)
 
 
+def draw_main(stdscr, app: App, log_buf: deque) -> None:
+    h, w = stdscr.getmaxyx()
+    cp_h = max(3, h // 6)
+    log_h = max(3, h // 6)
+    leaf_h = max(3, h - cp_h - log_h)
+
+    cache_w = max(28, w // 4)
+    log_w = max(1, w - cache_w)
+
+    top = curses.newwin(cp_h, w, 0, 0)
+    middle = curses.newwin(leaf_h, w, cp_h, 0)
+    bottom_log = curses.newwin(log_h, log_w, cp_h + leaf_h, 0)
+    bottom_cache = curses.newwin(log_h, cache_w, cp_h + leaf_h, log_w)
+
+    render_checkpoint_pane(top, app)
+    render_leaf_pane(middle, app)
+    render_log_pane(bottom_log, log_buf)
+    render_cache_pane(bottom_cache, app)
+
+    stdscr.noutrefresh()
+    top.noutrefresh()
+    middle.noutrefresh()
+    bottom_log.noutrefresh()
+    bottom_cache.noutrefresh()
+    curses.doupdate()
+
+
 def cmain(stdscr, app: App, log_buf: deque, initial_index: Optional[int]) -> None:
     curses.curs_set(0)
     stdscr.keypad(True)
@@ -478,30 +613,7 @@ def cmain(stdscr, app: App, log_buf: deque, initial_index: Optional[int]) -> Non
         log.error("startup failed: %s", e)
 
     while True:
-        h, w = stdscr.getmaxyx()
-        cp_h = max(3, h // 6)
-        log_h = max(3, h // 6)
-        leaf_h = max(3, h - cp_h - log_h)
-
-        cache_w = max(28, w // 4)
-        log_w = max(1, w - cache_w)
-
-        top = curses.newwin(cp_h, w, 0, 0)
-        middle = curses.newwin(leaf_h, w, cp_h, 0)
-        bottom_log = curses.newwin(log_h, log_w, cp_h + leaf_h, 0)
-        bottom_cache = curses.newwin(log_h, cache_w, cp_h + leaf_h, log_w)
-
-        render_checkpoint_pane(top, app)
-        render_leaf_pane(middle, app)
-        render_log_pane(bottom_log, log_buf)
-        render_cache_pane(bottom_cache, app)
-
-        stdscr.noutrefresh()
-        top.noutrefresh()
-        middle.noutrefresh()
-        bottom_log.noutrefresh()
-        bottom_cache.noutrefresh()
-        curses.doupdate()
+        draw_main(stdscr, app, log_buf)
 
         try:
             key = stdscr.getch()
@@ -518,6 +630,10 @@ def cmain(stdscr, app: App, log_buf: deque, initial_index: Optional[int]) -> Non
                 app.refresh_checkpoint()
             elif key in (ord("h"), ord("?")):
                 show_help_popup(stdscr)
+                stdscr.erase()
+            elif key == ord("s"):
+                show_signatures_popup(stdscr, app,
+                                      lambda: draw_main(stdscr, app, log_buf))
                 stdscr.erase()
             elif key == ord("g"):
                 target = prompt_integer(stdscr, "Go to leaf")

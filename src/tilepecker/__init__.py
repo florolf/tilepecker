@@ -270,7 +270,7 @@ def render_checkpoint_pane(win, app: App) -> None:
 
     name_w = max((len(s.name) for s in cp.signatures), default=4)
     name_w = max(name_w, len("name"))
-    payload_w = max((len(s.payload.hex()) for s in cp.signatures), default=len("payload"))
+    payload_w = max((len(_payload_summary(s.payload)) for s in cp.signatures), default=len("payload"))
     payload_w = max(payload_w, len("payload"))
     has_vkeys = app.vkeyset is not None
     keys: dict[tuple[str, int], Vkey] = {}
@@ -317,9 +317,16 @@ def render_checkpoint_pane(win, app: App) -> None:
         role = f"  {roles.get((sig.name, sig.key_id), '-').ljust(role_w)}" if role_w else ""
         ts_col = f"  {timestamps.get(sig, '-').ljust(ts_w)}" if ts_w else ""
         row = (f"  {mark:<2}  {sig.name.ljust(name_w)}  {sig.key_id:08x}  "
-               f"{sig_type.ljust(type_w)}{role}{ts_col}  {sig.payload.hex().ljust(payload_w)}")
+               f"{sig_type.ljust(type_w)}{role}{ts_col}  {_payload_summary(sig.payload).ljust(payload_w)}")
         _safe_addstr(win, y, 2, row)
         y += 1
+
+
+def _payload_summary(payload: bytes, limit: int = 16) -> str:
+    head = payload[:limit].hex()
+    if len(payload) > limit:
+        head += "…"
+    return f"{head} ({len(payload)} bytes)"
 
 
 def render_leaf_pane(win, app: App) -> None:

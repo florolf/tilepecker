@@ -1,6 +1,7 @@
 import argparse
 import curses
 import logging
+import os
 import time
 from collections import deque
 from typing import Callable, Optional
@@ -402,7 +403,8 @@ HOTKEY_HELP = [
     ("q",         "Quit"),
     ("r",         "Re-fetch checkpoint"),
     ("h, ?",      "Show this help"),
-    ("s",         "Signatures dialog (Enter shows full payload)"),
+    ("w",         "Write current leaf to a file"),
+    ("s",         "Signatures dialog (Enter shows full payload, w saves it)"),
     ("g",         "Go to leaf index (negative = from end; Esc to cancel)"),
     ("n, Right",  "Next leaf"),
     ("p, Left",   "Previous leaf"),
@@ -477,7 +479,7 @@ def show_signatures_popup(stdscr, app: App, redraw: Callable[[], None]) -> None:
         for i, (_, row) in enumerate(rows[top:top + visible]):
             attr = curses.A_REVERSE if top + i == sel else 0
             _safe_addstr(win, 2 + i, 1, row, attr)
-        _safe_addstr(win, h - 2, 1, "  Up/Down select, Enter payload, Esc/q close",
+        _safe_addstr(win, h - 2, 1, "  Up/Down select, Enter payload, w save, Esc/q close",
                      curses.A_DIM)
         win.refresh()
         key = win.getch()
@@ -486,6 +488,8 @@ def show_signatures_popup(stdscr, app: App, redraw: Callable[[], None]) -> None:
         if key in (curses.KEY_ENTER, 10, 13):
             show_payload_popup(stdscr, app, rows[sel][0], redraw)
             redraw()
+        elif key == ord("w"):
+            save_payload(stdscr, rows[sel][0], redraw)
         elif key == curses.KEY_RESIZE:
             redraw()
         else:
@@ -521,53 +525,105 @@ def show_payload_popup(stdscr, app: App, sig: NoteSignature,
         draw_box(win, "Signature payload")
         for i, line in enumerate(lines[top:top + visible]):
             _safe_addstr(win, 1 + i, 2, line)
-        hint = "  Esc/q close"
+        hint = "  w save, Esc/q close"
         if max_top:
-            hint = f"  [{top + 1}-{min(top + visible, len(lines))}/{len(lines)}] Up/Down scroll, Esc/q close"
+            hint = (f"  [{top + 1}-{min(top + visible, len(lines))}/{len(lines)}] "
+                    "Up/Down scroll, w save, Esc/q close")
         _safe_addstr(win, h - 2, 1, hint, curses.A_DIM)
         win.refresh()
         key = win.getch()
         if key in (27, ord("q"), curses.KEY_ENTER, 10, 13):
             return
-        if key == curses.KEY_RESIZE:
+        if key == ord("w"):
+            save_payload(stdscr, sig, redraw)
+        elif key == curses.KEY_RESIZE:
             redraw()
         else:
             top = _scroll_key(key, top, max_top + 1, visible)
 
 
-def prompt_integer(stdscr, title: str) -> Optional[int]:
-    width = 40
+def prompt_text(stdscr, title: str, label: str, initial: str = "",
+                accept: Callable[[str, str], bool] = lambda buf, c: c.isprintable(),
+                width: int = 40) -> Optional[str]:
+    """Single-line input popup. Returns None on Esc or empty input."""
     height = 5
     win = _popup_window(stdscr, height, width)
     win.timeout(-1)
+    _, w = win.getmaxyx()
+    field_w = max(1, w - 6)
     curses.curs_set(1)
     try:
-        buf = ""
+        buf = initial
         while True:
             draw_box(win, title)
-            _safe_addstr(win, 1, 2, "Enter index (Esc cancels):")
-            _safe_addstr(win, 2, 2, "> " + buf + " " * (width - 6 - len(buf)))
-            win.move(2, 4 + len(buf))
+            _safe_addstr(win, 1, 2, label)
+            shown = buf[-(field_w - 1):] if len(buf) >= field_w else buf
+            _safe_addstr(win, 2, 2, "> " + shown.ljust(field_w))
+            win.move(2, 4 + len(shown))
             win.refresh()
             ch = win.getch()
             if ch == 27:  # Esc
                 return None
             if ch in (curses.KEY_ENTER, 10, 13):
-                if not buf:
-                    return None
-                try:
-                    return int(buf)
-                except ValueError:
-                    return None
+                return buf or None
             if ch in (curses.KEY_BACKSPACE, 127, 8):
                 buf = buf[:-1]
                 continue
-            if 0 <= ch < 256:
-                c = chr(ch)
-                if c.isdigit() or (c == "-" and not buf):
-                    buf += c
+            if 0 <= ch < 256 and accept(buf, chr(ch)):
+                buf += chr(ch)
     finally:
         curses.curs_set(0)
+
+
+def prompt_integer(stdscr, title: str) -> Optional[int]:
+    buf = prompt_text(stdscr, title, "Enter index (Esc cancels):",
+                      accept=lambda buf, c: c.isdigit() or (c == "-" and not buf))
+    if buf is None:
+        return None
+    try:
+        return int(buf)
+    except ValueError:
+        return None
+
+
+def _default_payload_filename(sig: NoteSignature) -> str:
+    name = "".join(c if c.isalnum() or c in "-._" else "_" for c in sig.name)
+    return f"{name}+{sig.key_id:08x}.sig"
+
+
+def save_payload(stdscr, sig: NoteSignature, redraw: Callable[[], None]) -> None:
+    save_bytes(stdscr, sig.payload, _default_payload_filename(sig),
+               f"payload of {sig.name}+{sig.key_id:08x}", "Save payload", redraw)
+
+
+def save_bytes(stdscr, data: bytes, default_name: str, what: str, title: str,
+               redraw: Callable[[], None]) -> None:
+    """Prompt for a filename and write data there."""
+    sw = stdscr.getmaxyx()[1]
+    path = prompt_text(stdscr, title, "File name (Esc cancels):",
+                       initial=default_name,
+                       width=min(max(60, sw * 2 // 3), sw - 2))
+    redraw()
+    if path is None:
+        return
+    path = os.path.expanduser(path)
+    if os.path.exists(path):
+        question = f"{path} exists, overwrite? (y/N)"
+        answer = prompt_text(stdscr, title, question,
+                             accept=lambda buf, c: not buf and c in "yYnN",
+                             width=max(40, len(question) + 4))
+        redraw()
+        if answer is None or answer.lower() != "y":
+            log.info("not overwriting %s", path)
+            return
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        log.error("saving %s failed: %s", what, e)
+        return
+    log.info("saved %d byte %s to %s", len(data), what, path)
+    redraw()
 
 
 def draw_main(stdscr, app: App, log_buf: deque) -> None:
@@ -634,6 +690,14 @@ def cmain(stdscr, app: App, log_buf: deque, initial_index: Optional[int]) -> Non
             elif key == ord("s"):
                 show_signatures_popup(stdscr, app,
                                       lambda: draw_main(stdscr, app, log_buf))
+                stdscr.erase()
+            elif key == ord("w"):
+                if app.current_leaf is None or app.index is None:
+                    log.warning("no leaf loaded")
+                else:
+                    save_bytes(stdscr, app.current_leaf, f"leaf-{app.index}.bin",
+                               f"leaf {app.index}", "Save leaf",
+                               lambda: draw_main(stdscr, app, log_buf))
                 stdscr.erase()
             elif key == ord("g"):
                 target = prompt_integer(stdscr, "Go to leaf")

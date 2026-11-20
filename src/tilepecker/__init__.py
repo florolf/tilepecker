@@ -387,6 +387,8 @@ HOTKEY_HELP = [
     ("g",         "Go to leaf index (negative = from end; Esc to cancel)"),
     ("n, Right",  "Next leaf"),
     ("p, Left",   "Previous leaf"),
+    ("Home",      "First leaf"),
+    ("End",       "Last leaf"),
 ]
 
 
@@ -523,6 +525,12 @@ def cmain(stdscr, app: App, log_buf: deque, initial_index: Optional[int]) -> Non
             elif key in (curses.KEY_RIGHT, ord("n"), ord("N")):
                 if app.index is not None:
                     app.load_leaf(app.index + 1)
+            elif key == curses.KEY_HOME:
+                if app.checkpoint is not None:
+                    app.load_leaf(0)
+            elif key == curses.KEY_END:
+                if app.checkpoint is not None:
+                    app.load_leaf(app.checkpoint.size - 1)
             elif key == curses.KEY_RESIZE:
                 stdscr.erase()
         except Exception as e:

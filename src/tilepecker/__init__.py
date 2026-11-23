@@ -12,7 +12,7 @@ from tlog_scales.reader import TilesReader
 from tlog_scales.signing import NoteSignature, Vkey, VkeySet
 from tlog_scales.tlog import Checkpoint, InclusionProofInvalid
 
-from .formats import FORMATTERS, LeafFormatter
+from .formats import FORMATTERS, IdentityFormatter, LeafFormatter
 
 
 log = logging.getLogger("tilepecker")
@@ -744,6 +744,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "used for verification and the witness quorum is checked")
     parser.add_argument("--policy-format", choices=["auto", "c2sp", "sigsum"], default="auto",
                         help="Key format used in the policy file (default: auto)")
+    parser.add_argument("--preimage", action="append", default=[], metavar="TEXT",
+                        help="Context key/value preimage for the identity format, "
+                             "matched against H(H(TEXT)); @FILE reads one preimage "
+                             "per line from FILE, no comments (repeatable)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable DEBUG logging")
     return parser
@@ -762,8 +766,25 @@ def main() -> None:
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 
-    formatter_cls = FORMATTERS[args.format]
-    formatter = formatter_cls()
+    formatter: LeafFormatter
+    if args.format == "identity":
+        preimages: list[str] = []
+        for arg in args.preimage:
+            if arg.startswith("@"):
+                path = arg[1:]
+                try:
+                    with open(path, encoding="utf-8", newline="") as f:
+                        lines = [line.removesuffix("\n").removesuffix("\r") for line in f]
+                except (OSError, UnicodeDecodeError) as e:
+                    parser.error(f"failed to load preimages from {path}: {e}")
+                preimages += [line for line in lines if line]
+            else:
+                preimages.append(arg)
+        formatter = IdentityFormatter(preimages)
+    else:
+        if args.preimage:
+            parser.error("--preimage requires --format identity")
+        formatter = FORMATTERS[args.format]()
 
     policy: Optional[Policy] = None
     if args.policy is not None:

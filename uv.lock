@@ -208,15 +208,19 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tlog-scales", git = "https://github.com/florolf/tlog-scales?rev=f9174a42876fcad5a066662c93b843e56b87ec2e" }]
+requires-dist = [{ name = "tlog-scales", specifier = "==0.0.4" }]
 
 [[package]]
 name = "tlog-scales"
-version = "0.0.4.dev4+gf9174a428"
-source = { git = "https://github.com/florolf/tlog-scales?rev=f9174a42876fcad5a066662c93b843e56b87ec2e#f9174a42876fcad5a066662c93b843e56b87ec2e" }
+version = "0.0.4"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/32/d3/632e7be0d6813a193e416048a67b9f132c8ce6162c3903f276406159cd48/tlog_scales-0.0.4.tar.gz", hash = "sha256:6769156532791a230812171874c8c3105e595d49f10b9325068ec30333b0d74c", size = 73840, upload-time = "2026-11-25T10:16:44.642Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/e3/0242c9d30f23507890eeaf0c620da96895059ffb0161903cee5acdb5a3b1/tlog_scales-0.0.4-py3-none-any.whl", hash = "sha256:0ef3abb978678d259ebfa4942e9e8457901399ca981b59fc51d1c48cd10ff845", size = 20638, upload-time = "2026-11-25T10:16:43.528Z" },
 ]
 
 [[package]]
